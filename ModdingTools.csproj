@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>ModdingTools</AssemblyName>
+    <Product>Silverpine Modding Tools Menu</Product>
+    <Authors>Saelac; ChatGPT</Authors>
+    <Version>1.9.1</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Silverpine.ModdingTools</RootNamespace>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <Deterministic>true</Deterministic>
+    <RestoreAdditionalProjectSources>
+      https://api.nuget.org/v3/index.json;
+      https://nuget.bepinex.dev/v3/index.json;
+    </RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <SilverpineGameDir Condition="'$(SilverpineGameDir)' == '' and Exists('$(MSBuildProjectDirectory)\..\..\Silverpine_Data\Managed\Assembly-CSharp.dll')">$(MSBuildProjectDirectory)\..\..</SilverpineGameDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.*" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
+    <PackageReference Include="UnityEngine.Modules" Version="2022.3.62" IncludeAssets="compile" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(SilverpineGameDir)\Silverpine_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(SilverpineGameDir)\Silverpine_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(SilverpineGameDir)\Silverpine_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="ResolveReferences">
+    <Error
+      Condition="!Exists('$(SilverpineGameDir)\Silverpine_Data\Managed\Assembly-CSharp.dll')"
+      Text="Set SilverpineGameDir to the Silverpine installation directory." />
+  </Target>
+</Project>

@@ -1,0 +1,31 @@
+# Build output
+bin/
+obj/
+artifacts/
+dist/
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Debug and runtime output
+*.pdb
+*.mdb
+*.log
+*.dmp
+
+# Local game and configuration data
+BepInEx/
+Silverpine_Data/
+*.cfg
+saves/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
