@@ -4,7 +4,7 @@ Shared BepInEx framework services for extensible Silverpine mods.
 
 Created by **Saelac and ChatGPT**.
 
-**Current version:** 1.9.1
+**Current version:** 1.9.2
 
 ## Purpose
 
@@ -90,6 +90,17 @@ Plugin GUID:
 Saelac.Silverpine.ModdingTools
 ```
 
+Legacy dependency GUID provided by the same DLL:
+
+```text
+renegadex.silverpine.moddingtools
+```
+
+The legacy identity is a compatibility layer for already-built consumer
+plugins. New and rebuilt plugins should depend on the current plugin GUID.
+Install only the current `ModdingTools.dll`; do not install an older framework
+DLL alongside it.
+
 Public API namespace:
 
 ```csharp
@@ -99,18 +110,19 @@ Silverpine.ModdingTools
 Framework API version documented here:
 
 ```text
-ModdingTools 1.9.1
+ModdingTools 1.9.2
 ```
 
 ## Installation
 
 1. Install BepInEx 5 for Silverpine.
-2. Download and extract `ModdingTools-1.9.1.zip` from the GitHub release.
+2. Download and extract `ModdingTools-1.9.2.zip` from the GitHub release.
 3. Place the extracted files together under
    `BepInEx/plugins/ModdingTools/`.
 4. Remove older duplicate copies of `ModdingTools.dll` elsewhere under
    `BepInEx/plugins/`.
-5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.9.1**.
+5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.9.2** and
+   **Modding Tools Legacy GUID Compatibility 1.9.2**.
 
 The complete ZIP contains `ModdingTools.dll`, the shared
 `Newtonsoft.Json.dll`, this README, and the Silverpine plugin-lifetime
@@ -189,7 +201,7 @@ namespace Example.SilverpinePlugin
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     [BepInDependency(
         "Saelac.Silverpine.ModdingTools",
-        "1.9.1")]
+        "1.9.2")]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string PluginGuid = "example.silverpine.myplugin";
@@ -284,7 +296,7 @@ using Silverpine.ModdingTools;
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 [BepInDependency(
     Silverpine.ModdingTools.Plugin.PluginGuid,
-    "1.9.1")]
+    "1.9.2")]
 public sealed class MyPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "author.silverpine.myplugin";
@@ -1742,8 +1754,10 @@ For an inventory tool:
 
 ## Common integration failures
 
-- **Consumer does not load:** Verify the hard dependency GUID is exactly
-  `Saelac.Silverpine.ModdingTools` and one framework DLL is installed.
+- **Consumer does not load:** New plugins should use the exact hard dependency
+  GUID `Saelac.Silverpine.ModdingTools`. The legacy GUID
+  `renegadex.silverpine.moddingtools` is also provided for already-built
+  consumers. Verify that exactly one current framework DLL is installed.
 - **Code does not compile:** Add references for `ModdingTools.dll` and
   `Assembly-CSharp.dll`; add Unity UI or TextMeshPro references only when those
   types are used.

@@ -18,8 +18,9 @@ namespace Silverpine.ModdingTools;
 public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "Saelac.Silverpine.ModdingTools";
+    public const string LegacyPluginGuid = "renegadex.silverpine.moddingtools";
     public const string PluginName = "Modding Tools Menu";
-    public const string PluginVersion = "1.9.1";
+    public const string PluginVersion = "1.9.2";
 
     internal static ManualLogSource Log = null!;
     internal static ConfigEntry<KeyCode> InventoryModsShortcut = null!;
@@ -98,6 +99,25 @@ public sealed class Plugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(
             typeof(DialogueActionContinueOnlyPatch),
             PluginGuid + ".dialogue-action-continue-only");
+    }
+}
+
+/// <summary>
+/// Preserves the original BepInEx identity so consumer plugins compiled with
+/// the legacy hard dependency continue to load against the current framework.
+/// </summary>
+[BepInPlugin(
+    Plugin.LegacyPluginGuid,
+    "Modding Tools Legacy GUID Compatibility",
+    Plugin.PluginVersion)]
+[BepInDependency(Plugin.PluginGuid, Plugin.PluginVersion)]
+public sealed class LegacyGuidCompatibilityPlugin : BaseUnityPlugin
+{
+    private void Awake()
+    {
+        Logger.LogInfo(
+            $"Legacy dependency GUID '{Plugin.LegacyPluginGuid}' is provided by " +
+            $"'{Plugin.PluginGuid}' {Plugin.PluginVersion}.");
     }
 }
 
