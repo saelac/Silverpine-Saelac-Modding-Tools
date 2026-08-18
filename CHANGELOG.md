@@ -2,6 +2,13 @@
 
 Created by Saelac and ChatGPT.
 
+## 1.9.2
+
+- Adds an in-assembly compatibility plugin for the legacy
+  `renegadex.silverpine.moddingtools` BepInEx GUID. Consumer plugins built with
+  that hard dependency now load through `Saelac.Silverpine.ModdingTools`
+  without requiring a separate redirect DLL.
+
 ## 1.9.1
 
 - Provides shared main-menu and in-game menu registration, guarded GUI
