@@ -20,7 +20,7 @@ public sealed class Plugin : BaseUnityPlugin
     public const string PluginGuid = "Saelac.Silverpine.ModdingTools";
     public const string LegacyPluginGuid = "renegadex.silverpine.moddingtools";
     public const string PluginName = "Modding Tools Menu";
-    public const string PluginVersion = "1.9.2";
+    public const string PluginVersion = "1.9.3";
 
     internal static ManualLogSource Log = null!;
     internal static ConfigEntry<KeyCode> InventoryModsShortcut = null!;
@@ -99,6 +99,15 @@ public sealed class Plugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(
             typeof(DialogueActionContinueOnlyPatch),
             PluginGuid + ".dialogue-action-continue-only");
+        Harmony.CreateAndPatchAll(
+            typeof(DialoguePromptHistoryPatch),
+            PluginGuid + ".dialogue-prompt-history");
+        Harmony.CreateAndPatchAll(
+            typeof(DialoguePromptWorldLorePatch),
+            PluginGuid + ".dialogue-prompt-world-lore");
+        Harmony.CreateAndPatchAll(
+            typeof(DialoguePromptEnvironmentPatch),
+            PluginGuid + ".dialogue-prompt-environment");
     }
 }
 

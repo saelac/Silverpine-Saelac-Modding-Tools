@@ -2,6 +2,13 @@
 
 Created by Saelac and ChatGPT.
 
+## 1.9.3
+
+- Adds the `DialoguePromptTransforms` registry for conditional, non-mutating
+  dialogue-history, world-lore, and environment prompt transformations.
+- Contains transform activation and callback failures so consumer prompt
+  customization cannot break Silverpine's native prompt pipeline.
+
 ## 1.9.2
 
 - Adds an in-assembly compatibility plugin for the legacy

@@ -4,7 +4,7 @@ Shared BepInEx framework services for extensible Silverpine mods.
 
 Created by **Saelac and ChatGPT**.
 
-**Current version:** 1.9.2
+**Current version:** 1.9.3
 
 ## Purpose
 
@@ -17,6 +17,7 @@ Created by **Saelac and ChatGPT**.
 - An injectable IMGUI construction menu with previews and native placement
   behavior.
 - A shared, scrollable conversation-action menu with a pinned **Leave** button.
+- Conditional dialogue prompt-history and generated-section transformations.
 - A custom-audio registry with effects, ambience, priority music, shared
   circumstance hooks, and user volume controls.
 
@@ -110,19 +111,19 @@ Silverpine.ModdingTools
 Framework API version documented here:
 
 ```text
-ModdingTools 1.9.2
+ModdingTools 1.9.3
 ```
 
 ## Installation
 
 1. Install BepInEx 5 for Silverpine.
-2. Download and extract `ModdingTools-1.9.2.zip` from the GitHub release.
+2. Download and extract `ModdingTools-1.9.3.zip` from the GitHub release.
 3. Place the extracted files together under
    `BepInEx/plugins/ModdingTools/`.
 4. Remove older duplicate copies of `ModdingTools.dll` elsewhere under
    `BepInEx/plugins/`.
-5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.9.2** and
-   **Modding Tools Legacy GUID Compatibility 1.9.2**.
+5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.9.3** and
+   **Modding Tools Legacy GUID Compatibility 1.9.3**.
 
 The complete ZIP contains `ModdingTools.dll`, the shared
 `Newtonsoft.Json.dll`, this README, and the Silverpine plugin-lifetime
@@ -201,7 +202,7 @@ namespace Example.SilverpinePlugin
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     [BepInDependency(
         "Saelac.Silverpine.ModdingTools",
-        "1.9.2")]
+        "1.9.3")]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string PluginGuid = "example.silverpine.myplugin";
@@ -296,7 +297,7 @@ using Silverpine.ModdingTools;
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 [BepInDependency(
     Silverpine.ModdingTools.Plugin.PluginGuid,
-    "1.9.2")]
+    "1.9.3")]
 public sealed class MyPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "author.silverpine.myplugin";
@@ -742,6 +743,36 @@ DialogueInputActors.Register(
 Use `DialogueInputActors.CurrentNpc` to detect an optional actor,
 `DialogueInputActors.TrySubmit(text)` to submit through its owner, and
 `DialogueInputActors.ClearAll()` when the player identity must be restored.
+
+### Conditional dialogue prompt transforms
+
+`DialoguePromptTransforms` lets a consumer conditionally transform copies of
+the dialogue history and Silverpine's generated world-lore or environment
+sections. Stored `NeuralNPC.dialogElements` are never passed directly to a
+consumer. Multiple active transforms run by `Order`, then stable ID, and
+callback failures are logged and contained.
+
+```csharp
+DialoguePromptTransforms.Register(
+    PluginGuid,
+    new DialoguePromptTransformDefinition
+    {
+        Id = PluginGuid + ".prompt-mode",
+        IsActive = context => promptModeEnabled,
+        TransformHistory = (context, history) =>
+            history.Where(element => element.speakerType != SpeakerType.Player),
+        TransformText = (context, section, text) =>
+            section == DialoguePromptTextSection.Environment
+                ? RewriteEnvironment(text)
+                : text
+    });
+```
+
+History transforms run before `NeuralNPC.GetCombinedPrompt` clones and formats
+the selected elements. Text transforms receive either
+`DialoguePromptTextSection.WorldLore` or `Environment`. Dispose the returned
+registration, call its `Unregister`, or use
+`DialoguePromptTransforms.UnregisterOwner` when removal is genuinely required.
 
 Public signatures:
 
