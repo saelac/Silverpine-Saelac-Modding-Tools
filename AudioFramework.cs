@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Audio;
@@ -460,17 +461,19 @@ public sealed class MusicPlayback : IDisposable
 /// <summary>Ownership handle for a condition, dialogue, or map music cue.</summary>
 public sealed class MusicCueRegistration : IDisposable
 {
-    internal MusicCueRegistration(string ownerId, string id)
+    internal MusicCueRegistration(string ownerId, string id, long generation)
     {
         OwnerId = ownerId;
         Id = id;
+        Generation = generation;
     }
 
     public string OwnerId { get; }
     public string Id { get; }
-    public bool IsRegistered => ModAudio.Runtime?.IsCueRegistered(OwnerId, Id) ?? false;
+    internal long Generation { get; }
+    public bool IsRegistered => ModAudio.Runtime?.IsCueRegistered(OwnerId, Id, Generation) ?? false;
 
-    public bool Unregister() => ModAudio.Runtime?.UnregisterCue(OwnerId, Id) ?? false;
+    public bool Unregister() => ModAudio.Runtime?.UnregisterCue(OwnerId, Id, Generation) ?? false;
     public void Dispose() => Unregister();
 }
 
@@ -480,6 +483,16 @@ public sealed class MusicCueRegistration : IDisposable
 /// </summary>
 public static class ModAudio
 {
+    private sealed class PendingLoad
+    {
+        internal string Owner = "";
+        internal string Path = "";
+        internal AudioClipLoadOptions Options = null!;
+        internal readonly CancellationTokenSource Cancel = new();
+        internal Task<AudioClipRegistration> Task = null!;
+        internal int Waiters;
+    }
+    private static readonly Dictionary<string, PendingLoad> PendingLoads = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, AudioClipRegistration> Clips =
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, AudioVolumeSliderRegistration>
@@ -726,12 +739,19 @@ public static class ModAudio
         return registration;
     }
 
-    public static async Task<AudioClipRegistration> LoadClipAsync(
+    public static Task<AudioClipRegistration> LoadClipAsync(
         string ownerId,
         string clipId,
         string filePath,
-        AudioClipLoadOptions? options = null)
+        AudioClipLoadOptions? options = null) =>
+        LoadClipAsync(ownerId, clipId, filePath, options, CancellationToken.None);
+
+    /// <summary>Cancels this caller's wait; a shared decode aborts only when every waiter cancels.</summary>
+    public static async Task<AudioClipRegistration> LoadClipAsync(
+        string ownerId, string clipId, string filePath,
+        AudioClipLoadOptions? options, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ownerId = RequireId(ownerId, nameof(ownerId));
         clipId = RequireId(clipId, nameof(clipId));
         if (string.IsNullOrWhiteSpace(filePath))
@@ -755,6 +775,52 @@ public static class ModAudio
 
         AudioClipLoadOptions snapshot =
             options?.Snapshot() ?? new AudioClipLoadOptions();
+        if (!PendingLoads.TryGetValue(clipId, out PendingLoad pending))
+        {
+            pending = new PendingLoad { Owner = ownerId, Path = fullPath, Options = snapshot };
+            PendingLoads.Add(clipId, pending);
+            pending.Task = DecodeClipAsync(ownerId, clipId, fullPath, pending);
+        }
+        else if (!string.Equals(pending.Owner, ownerId, StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(pending.Path, fullPath, StringComparison.OrdinalIgnoreCase) ||
+                 pending.Options.AudioType != snapshot.AudioType ||
+                 pending.Options.StreamAudio != snapshot.StreamAudio ||
+                 pending.Options.DestroyOnUnregister != snapshot.DestroyOnUnregister)
+            throw new InvalidOperationException("A different audio request is already loading ID '" + clipId + "'.");
+
+        pending.Waiters++;
+        try
+        {
+            if (!cancellationToken.CanBeCanceled) return await pending.Task;
+            var canceled = new TaskCompletionSource<bool>();
+            using (cancellationToken.Register(() => canceled.TrySetResult(true)))
+            {
+                await Task.WhenAny(pending.Task, canceled.Task);
+                cancellationToken.ThrowIfCancellationRequested();
+                return await pending.Task;
+            }
+        }
+        finally
+        {
+            pending.Waiters--;
+            if (pending.Waiters == 0 && !pending.Task.IsCompleted)
+            {
+                pending.Cancel.Cancel();
+                if (PendingLoads.TryGetValue(clipId, out var current) && ReferenceEquals(current, pending))
+                    PendingLoads.Remove(clipId);
+            }
+        }
+    }
+
+    private static async Task<AudioClipRegistration> DecodeClipAsync(
+        string ownerId, string clipId, string fullPath, PendingLoad pending)
+    {
+        // Ensure the shared task has been assigned before any synchronous completion.
+        await Task.Yield();
+        AudioClipLoadOptions snapshot = pending.Options;
+        try
+        {
+        pending.Cancel.Token.ThrowIfCancellationRequested();
         AudioType audioType = snapshot.AudioType == AudioType.UNKNOWN
             ? DetectAudioType(fullPath)
             : snapshot.AudioType;
@@ -765,7 +831,12 @@ public static class ModAudio
             downloader.streamAudio = snapshot.StreamAudio;
         UnityWebRequestAsyncOperation operation = request.SendWebRequest();
         while (!operation.isDone)
+        {
+            if (pending.Cancel.IsCancellationRequested) request.Abort();
+            pending.Cancel.Token.ThrowIfCancellationRequested();
             await Task.Yield();
+        }
+        pending.Cancel.Token.ThrowIfCancellationRequested();
         if (request.result != UnityWebRequest.Result.Success)
             throw new InvalidDataException(
                 $"Unity could not decode audio '{fullPath}': {request.error}");
@@ -787,6 +858,13 @@ public static class ModAudio
         {
             UnityEngine.Object.Destroy(clip);
             throw;
+        }
+        }
+        finally
+        {
+            if (PendingLoads.TryGetValue(clipId, out var current) && ReferenceEquals(current, pending))
+                PendingLoads.Remove(clipId);
+            pending.Cancel.Dispose();
         }
     }
 
@@ -1015,6 +1093,8 @@ public static class ModAudio
         if (string.IsNullOrWhiteSpace(ownerId))
             return;
         ownerId = ownerId.Trim();
+        foreach (var pending in PendingLoads.Values.Where(p => string.Equals(p.Owner, ownerId, StringComparison.OrdinalIgnoreCase)).ToArray())
+            pending.Cancel.Cancel();
         Runtime?.StopOwner(ownerId, removeCues: true);
         foreach (AudioClipRegistration registration in Clips.Values
                      .Where(value => string.Equals(
@@ -1391,9 +1471,10 @@ internal sealed class AudioFrameworkRuntime : MonoBehaviour
             Condition = definition.IsActive,
             Sequence = ++nextSequence
         };
+        long generation = cues[definition.Id].Sequence;
         musicDirty = true;
         EvaluateMusic(force: true);
-        return new MusicCueRegistration(ownerId, definition.Id);
+        return new MusicCueRegistration(ownerId, definition.Id, generation);
     }
 
     internal bool IsPlaybackActive(long token) =>
@@ -1406,8 +1487,9 @@ internal sealed class AudioFrameworkRuntime : MonoBehaviour
     internal bool IsCurrentMusicRequest(long token) =>
         currentCandidate?.DirectToken == token;
 
-    internal bool IsCueRegistered(string ownerId, string id) =>
+    internal bool IsCueRegistered(string ownerId, string id, long generation) =>
         cues.TryGetValue(id, out MusicCandidate candidate) &&
+        candidate.Sequence == generation &&
         string.Equals(
             candidate.OwnerId,
             ownerId,
@@ -1428,9 +1510,10 @@ internal sealed class AudioFrameworkRuntime : MonoBehaviour
         EvaluateMusic(force: true);
     }
 
-    internal bool UnregisterCue(string ownerId, string id)
+    internal bool UnregisterCue(string ownerId, string id, long generation)
     {
         if (!cues.TryGetValue(id, out MusicCandidate candidate) ||
+            candidate.Sequence != generation ||
             !string.Equals(
                 candidate.OwnerId,
                 ownerId,
@@ -1617,7 +1700,7 @@ internal sealed class AudioFrameworkRuntime : MonoBehaviour
 
         List<MusicCandidate> active = new();
         active.AddRange(directMusic.Values.Where(value => !value.Completed));
-        foreach (MusicCandidate cue in cues.Values)
+        foreach (MusicCandidate cue in cues.Values.ToArray())
         {
             bool conditionActive = false;
             try

@@ -9,6 +9,8 @@ using UnityEngine.UI;
 
 namespace Silverpine.ModdingTools;
 
+public enum ModToolCloseReason { Normal, EmergencyEscape, HostDestroyed }
+
 /// <summary>
 /// Idempotent ownership token for an open framework tool. Close or dispose it
 /// when the tool closes, fails to open, is disabled, or is destroyed.
@@ -26,24 +28,36 @@ public sealed class ModToolSession : IDisposable
 
     public string Id { get; }
     public bool IsClosed => release == null;
+    public ModToolCloseReason CloseReason { get; private set; }
     public event Action? Closed;
 
-    public void Close()
+    /// <summary>Attach cancellation for a picker or a GUI not derived from ModToolBehaviour.</summary>
+    public IDisposable RegisterCancellation(Action cancel)
+    {
+        if (cancel == null) throw new ArgumentNullException(nameof(cancel));
+        if (IsClosed)
+            FrameworkDiagnostics.Invoke(Id, "session cancellation", cancel);
+        else
+            Closed += cancel;
+        return new ModRegistration(() => Closed -= cancel);
+    }
+
+    public void Close() => RequestClose(ModToolCloseReason.Normal);
+
+    public void RequestClose(ModToolCloseReason reason)
     {
         Action? action = release;
         if (action == null)
             return;
 
         release = null;
-        try
-        {
-            action();
-        }
-        finally
-        {
-            Closed?.Invoke();
-            Closed = null;
-        }
+        CloseReason = reason;
+        Action? handlers = Closed;
+        Closed = null;
+        FrameworkDiagnostics.Invoke(Id, "session release", action);
+        if (handlers != null)
+            foreach (Action handler in handlers.GetInvocationList())
+                FrameworkDiagnostics.Invoke(Id, "session close callback", handler);
     }
 
     public void Dispose() => Close();
@@ -63,15 +77,35 @@ public abstract class ModToolBehaviour : MonoBehaviour
     {
         if (session == null)
             throw new ArgumentNullException(nameof(session));
-        frameworkSession?.Close();
+        if (ReferenceEquals(frameworkSession, session)) return;
+        ReleaseSession();
         frameworkSession = session;
+        session.Closed += OnAttachedSessionClosed;
+        if (session.IsClosed) OnAttachedSessionClosed();
     }
 
     protected void ReleaseSession()
     {
         ModToolSession? session = frameworkSession;
         frameworkSession = null;
+        if (session != null) session.Closed -= OnAttachedSessionClosed;
         session?.Close();
+    }
+
+    private void OnAttachedSessionClosed()
+    {
+        ModToolSession? session = frameworkSession;
+        frameworkSession = null;
+        if (session != null) session.Closed -= OnAttachedSessionClosed;
+        if (this != null) OnFrameworkSessionClosed();
+    }
+
+    /// <summary>Override for custom cleanup. The default cancels coroutines and destroys this window.</summary>
+    protected virtual void OnFrameworkSessionClosed()
+    {
+        StopAllCoroutines();
+        ModOverlayRootMarker? overlay = GetComponentInParent<ModOverlayRootMarker>(true);
+        Destroy(overlay != null ? overlay.gameObject : gameObject);
     }
 
     protected virtual void OnDisable() => ReleaseSession();
@@ -157,6 +191,9 @@ public sealed class ModOverlay
     }
 }
 
+// Marks only canvases created by this framework, never arbitrary game UI parents.
+internal sealed class ModOverlayRootMarker : MonoBehaviour { }
+
 /// <summary>
 /// Small native-UI factory that reuses Silverpine's inventory visual assets.
 /// </summary>
@@ -171,7 +208,8 @@ public static class ModUi
             typeof(RectTransform),
             typeof(Canvas),
             typeof(CanvasScaler),
-            typeof(GraphicRaycaster));
+            typeof(GraphicRaycaster),
+            typeof(ModOverlayRootMarker));
         Canvas canvas = overlay.GetComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         canvas.sortingOrder = sortingOrder;

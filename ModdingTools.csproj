@@ -4,7 +4,7 @@
     <AssemblyName>ModdingTools</AssemblyName>
     <Product>Silverpine Modding Tools Menu</Product>
     <Authors>Saelac; ChatGPT</Authors>
-    <Version>1.9.3</Version>
+    <Version>1.10.0</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>Silverpine.ModdingTools</RootNamespace>
@@ -27,6 +27,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
     <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
     <PackageReference Include="BepInEx.Core" Version="5.*" />
     <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />

@@ -156,6 +156,40 @@ public static class SerializablePrefabs
     private static readonly Dictionary<string, SerializablePrefabRegistration>
         Registrations = new(StringComparer.OrdinalIgnoreCase);
 
+    private sealed class Alias
+    {
+        internal string Owner = "";
+        internal SerializablePrefabRegistration Target = null!;
+    }
+    private static readonly Dictionary<string, Alias> Aliases = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Resolve an old saved name to a currently registered prefab of the same owner.</summary>
+    public static ModRegistration RegisterAlias(string ownerId, string oldName, string currentName)
+    {
+        if (string.IsNullOrWhiteSpace(ownerId) || string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(currentName))
+            throw new ArgumentException("Owner, old name, and current name are required.");
+        ownerId = ownerId.Trim(); oldName = oldName.Trim(); currentName = currentName.Trim();
+        if (!Registrations.TryGetValue(currentName, out var target) || !string.Equals(target.OwnerId, ownerId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The alias target must be registered by the same owner.");
+        EnsureNativeNameAvailable(GetNativeDictionary(), oldName);
+        if (Aliases.TryGetValue(oldName, out var existing) && !string.Equals(existing.Owner, ownerId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The old prefab name is already claimed by another owner.");
+        var alias = new Alias { Owner = ownerId, Target = target };
+        Aliases[oldName] = alias;
+        return new ModRegistration(() =>
+        {
+            if (Aliases.TryGetValue(oldName, out var current) && ReferenceEquals(current, alias)) Aliases.Remove(oldName);
+        });
+    }
+
+    internal static GameObject? ResolveAlias(string name)
+    {
+        if (Aliases.TryGetValue(name, out var alias) &&
+            Registrations.TryGetValue(alias.Target.PrefabName, out var current) &&
+            ReferenceEquals(current, alias.Target)) return current.Template;
+        return null;
+    }
+
     public static SerializablePrefabRegistration Register(
         string ownerId,
         string prefabName,
@@ -390,6 +424,8 @@ public static class SerializablePrefabs
                 "A non-empty prefab name is required.",
                 nameof(prefabName));
         string name = prefabName.Trim();
+        if (Aliases.ContainsKey(name))
+            throw new InvalidOperationException("Prefab name '" + name + "' is reserved by a save alias.");
         if (name.IndexOfAny(new[] { ' ', '(' }) >= 0)
             throw new ArgumentException(
                 "Prefab names cannot contain spaces or '('. Silverpine truncates " +
@@ -423,6 +459,17 @@ public static class SerializablePrefabs
         (Dictionary<string, GameObject>?)PrefabsField.GetValue(null) ??
         throw new InvalidOperationException(
             "Silverpine's serialization prefab registry is unavailable.");
+}
+
+[HarmonyPatch(typeof(SerializationManager), nameof(SerializationManager.GetPrefabFromName))]
+internal static class SerializablePrefabAliasPatch
+{
+    private static void Postfix(string prefabName, ref GameObject __result)
+    {
+        if (__result != null) return;
+        __result = SerializablePrefabs.ResolveAlias(prefabName)!;
+        if (__result == null && SerializationManager.loadingSave) ModSaveData.ReportMissingPrefab(prefabName);
+    }
 }
 
 internal sealed class SerializablePrefabInstanceState : MonoBehaviour

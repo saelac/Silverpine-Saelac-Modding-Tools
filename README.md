@@ -4,7 +4,7 @@ Shared BepInEx framework services for extensible Silverpine mods.
 
 Created by **Saelac and ChatGPT**.
 
-**Current version:** 1.9.3
+**Current version:** 1.10.0
 
 ## Purpose
 
@@ -111,19 +111,19 @@ Silverpine.ModdingTools
 Framework API version documented here:
 
 ```text
-ModdingTools 1.9.3
+ModdingTools 1.10.0
 ```
 
 ## Installation
 
 1. Install BepInEx 5 for Silverpine.
-2. Download and extract `ModdingTools-1.9.3.zip` from the GitHub release.
+2. Download and extract `ModdingTools-1.10.0.zip` from the GitHub release.
 3. Place the extracted files together under
    `BepInEx/plugins/ModdingTools/`.
 4. Remove older duplicate copies of `ModdingTools.dll` elsewhere under
    `BepInEx/plugins/`.
-5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.9.3** and
-   **Modding Tools Legacy GUID Compatibility 1.9.3**.
+5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.10.0** and
+   **Modding Tools Legacy GUID Compatibility 1.10.0**.
 
 The complete ZIP contains `ModdingTools.dll`, the shared
 `Newtonsoft.Json.dll`, this README, and the Silverpine plugin-lifetime
@@ -146,6 +146,206 @@ optimized and deterministic, do not emit debug symbols, and do not copy the
 game or BepInEx compile-time references into the output.
 
 ## Standalone handoff for an AI or developer
+
+### Compatibility and additions in 1.10.0
+
+All public/protected API signatures from 1.9.3 and both BepInEx GUIDs remain
+available. Existing compiled consumers do not need rebuilding for this update.
+The static `Register`/`RegisterSession` methods retain their replacement
+semantics; duplicate IDs now also appear in Framework Status. IDs are trimmed
+consistently. New APIs below are optional and require a 1.10.0 minimum dependency.
+
+The inventory Mods tab keeps three columns and vertical scrolling. It now
+recalculates on reopening, resolution/canvas changes, and registration changes.
+Search filters labels and IDs; **Group by mod** sorts entries by their owner.
+Legacy entries use matching BepInEx metadata when available. Typing in Search
+does not activate the M shortcut or the inventory close key; Escape still works.
+
+### Optional owner context
+
+Keep a `ModContext` on the plugin for its process lifetime. It qualifies local
+IDs with the owner GUID, checks owner conflicts, and tracks exact registrations.
+Do not dispose it from a BepInEx bootstrap-host `OnDestroy` or `OnDisable`.
+Disposal is only for deliberate content teardown, and must not remove prefabs
+while a loaded save uses them. Temporary windows still release their sessions.
+
+```csharp
+private ModContext? context;
+
+private void Awake()
+{
+    context = new ModContext(PluginGuid, "My Mod");
+    context.RegisterMainMenu("settings", "My Mod Settings",
+        (mainMenu, session) => SetupWindow.Open(mainMenu, session));
+    context.RegisterInventoryMenu("controls", "My Mod Controls",
+        (inventory, session) => GameplayWindow.Open(inventory, session));
+}
+```
+
+`SetupWindow` and `GameplayWindow` follow the complete window skeleton below.
+`context.Id("controls")` returns `PluginGuid + ".controls"`. Already qualified
+IDs are accepted. Prefab names are intentionally not renamed by the context.
+Use `context.Id("category-name")` as a construction's `Category` when referring
+to a category created through the same context.
+
+The context supplies these wrappers around the existing definition types:
+
+| Method | Result |
+| --- | --- |
+| `RegisterMainMenu`, `RegisterInventoryMenu` | Exact menu removal handle |
+| `RegisterDialogueAction`, `RegisterPromptTransform` | Owned dialogue registration |
+| `RegisterClip`, `LoadClipAsync` | Owned audio clip registration |
+| `RegisterVolumeSlider`, `RegisterMusicCue` | Owned slider/cue registration |
+| `Play`, `PlayMusic` | Tracked playback handle |
+| `RegisterConstructionCategory`, `RegisterConstruction` | Owned category/construction handle |
+| `RegisterPrefab`, `RegisterPrefabAlias` | Serializer registration or alias handle |
+| `RegisterSaveData` | Versioned per-save payload handle |
+| `Track(handle)` | Track another `IDisposable`, such as a static API registration |
+
+For static APIs not wrapped above, pass `context.OwnerId`, qualify IDs with
+`context.Id`, and use `context.Track` on the returned handle. The context does
+not unregister registrations that were replaced after it acquired them.
+
+### Emergency close and world input
+
+Escape now checks the active session even during `BeginWorldInput`. It releases
+the session and returns to the Mods page. A `ModToolBehaviour` attached to that
+session stops its coroutines and destroys its window when the framework closes
+the session. Override `OnFrameworkSessionClosed()` for a different window
+lifetime, performing equivalent cleanup. Normal `ReleaseSession()` detaches
+this handler before closing the session, preserving existing explicit close code.
+
+For a native overlay, task, or picker managed outside `ModToolBehaviour`, retain
+the following handle until the operation ends:
+
+```csharp
+IDisposable cancellation = session.RegisterCancellation(() =>
+{
+    // Cancel outstanding work and close/destroy only this mod's own UI.
+    pickerCancellation.Cancel();
+    overlay.Destroy();
+});
+// On normal picker completion, detach the callback:
+cancellation.Dispose();
+```
+
+The variables above represent the consumer's cancellation-token source and
+overlay. The callback also runs on normal session closure, so it must be safe
+to call more than once. Existing `session.Closed` subscribers continue to work.
+Exceptions from one close handler cannot prevent later handlers from running.
+`session.CloseReason` distinguishes `Normal`, `EmergencyEscape`, and
+`HostDestroyed`. An arbitrary legacy window using only the old close `Action`
+still needs its own close handling; the framework cannot safely identify and
+destroy UI objects that were never attached to its session.
+
+### Cancellable audio loading
+
+The original four-argument `ModAudio.LoadClipAsync` remains unchanged. The new
+five-argument overload accepts `options` followed by a cancellation token:
+
+```csharp
+AudioClipRegistration clip = await ModAudio.LoadClipAsync(
+    PluginGuid, PluginGuid + ".music", audioPath,
+    new AudioClipLoadOptions { StreamAudio = true }, cancellationToken);
+```
+
+Concurrent requests with the same owner, ID, path, and options share a decode.
+Canceling one caller does not abort another caller's request. When every caller
+cancels, the decode is aborted; owner teardown also cancels pending loads.
+Requests using a pending ID with conflicting options/path/owner are rejected.
+All calls begin on Unity's main thread. Disposing an old music-cue handle cannot
+remove a replacement registered under the same ID.
+
+### Save aliases and versioned data
+
+Register the current prefab first, then give its previous saved name an alias:
+
+```csharp
+SerializablePrefabs.Register(PluginGuid, "my_mod_new_table", template);
+IDisposable alias = SerializablePrefabs.RegisterAlias(
+    PluginGuid, "my_mod_old_table", "my_mod_new_table");
+```
+
+Both names belong to the same owner. The old name must not shadow a native or
+registered prefab. Existing saves instantiate the current template and future
+saves use its current name. The alias does not migrate serialized component
+layouts: retain compatible component serialization or handle it in the mod.
+
+Register optional per-save extension data as a text payload. JSON is supported
+as a string supplied by the consumer; the API does not require a JSON library.
+This minimal example uses a versioned text value:
+
+```csharp
+private string savedMode = "default";
+
+private void RegisterSaveState(ModContext context)
+{
+    context.RegisterSaveData(new ModSaveDataDefinition
+    {
+        Id = "state",
+        CurrentVersion = 2,
+        Capture = () => savedMode,
+        Restore = text => savedMode = text,
+        Reset = () => savedMode = "default",
+        Migrate = (fromVersion, text) => fromVersion == 1
+            ? (text == "old-default" ? "default" : text)
+            : throw new InvalidOperationException("Unsupported migration step")
+    });
+}
+```
+
+`Migrate(N, payload)` upgrades N to N+1. Multiple steps run in order on a copy.
+Newer payloads are not downgraded. Failed migrations/captures retain previous
+payloads. Missing owners' data is retained when the save is written again.
+`Reset` runs before each load, including old saves without extension data.
+`ModSaveData.Loaded` fires after restores, and `Saved` after companion writing.
+These hooks survive bootstrap-host destruction.
+
+Data is stored beside the native save as `<save>.moddingtools`, with a hash of
+the native save, an envelope version, and owner/payload versions. Writes use a
+temporary file and atomic replacement, keeping the previous companion as
+`.bak`. Copy the native save and companion together when moving saves. If a
+save is deleted through Silverpine, its companion may remain as recovery data.
+A missing companion means defaults; a mismatched/unreadable companion is
+reported and protected from replacement. A crash between native saving and
+companion writing can produce such a mismatch; restore a matching backup pair.
+
+Missing saved prefabs produce a visible warning and a Framework Status entry.
+Before overwriting an existing save after missing content or restore failures,
+the framework keeps a `.moddingtools-recovery-...` native/companion pair. If
+that copy fails, saving aborts rather than overwriting the recovery source.
+Restore the supplying mod and original save before resaving skipped objects.
+The framework does not recreate absent mod behavior or alter native save bytes.
+
+### Framework Status and optional features
+
+Open **Framework Status** from either shared menu. It shows loaded plugins,
+registered menu entries, active inventory-session ownership, music, save
+warnings, feature availability, and the latest 100 errors. Repeated identical
+messages are throttled in this view. It does not enable per-frame debug output.
+
+Each feature installs independently and rolls back its own patches on failure.
+Other features continue initializing. Consumers can check
+`FrameworkDiagnostics.IsFeatureAvailable(featureId)` before offering optional
+behavior. IDs are `menus.main`, `menus.inventory`, `prefabs`, `construction`,
+`audio`, `audio.dialogue`, `dialogue.actions`, `dialogue.prompts`, and `save-data`.
+`FrameworkDiagnostics.Report(ownerId, operation, exception)` adds a contained
+failure to the status view without logging every frame.
+
+### Verification
+
+Build the Release DLL, then run the checks against an older framework DLL.
+The test runner requires the .NET 9 SDK; the plugin remains .NET Standard 2.1:
+
+```powershell
+dotnet run --project Tests/FrameworkChecks.csproj -c Release `
+  -p:SilverpineGameDir="C:\path\to\Silverpine" -- `
+  "C:\path\to\Silverpine" "C:\path\to\older\ModdingTools.dll"
+```
+
+The checks compare public/protected APIs and GUIDs and exercise session,
+registration, audio-wait, and save-data failure paths. Native UI positioning,
+world-picker interaction, and Unity audio playback also need an in-game check.
 
 This document is sufficient to add a consumer entry without access to the
 Modding Tools source or its `.csproj`. Do not copy framework source into the
@@ -202,7 +402,7 @@ namespace Example.SilverpinePlugin
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     [BepInDependency(
         "Saelac.Silverpine.ModdingTools",
-        "1.9.3")]
+        "1.10.0")]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string PluginGuid = "example.silverpine.myplugin";
@@ -297,7 +497,7 @@ using Silverpine.ModdingTools;
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 [BepInDependency(
     Silverpine.ModdingTools.Plugin.PluginGuid,
-    "1.9.3")]
+    "1.10.0")]
 public sealed class MyPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "author.silverpine.myplugin";
@@ -440,8 +640,8 @@ consumers; new integrations should use `RegisterSession`.
 public static bool Unregister(string id)
 ```
 
-Removes an entry and returns whether it existed. This is normally only useful
-before the main menu is built.
+Removes an entry and returns whether it existed. Menus refresh registrations
+without reloading plugins; registration is still normally done during Awake.
 
 ## Inventory Mods tab API
 
@@ -470,15 +670,15 @@ public static void RegisterSession(
 - `open` receives the active `InventoryUI` and a `ModToolSession`.
 - The tool must attach, retain, and close the session when its GUI closes or
   fails to open.
-- `InventoryModTools.Unregister(string id)` removes a registration before the
-  pause menu is built.
+- `InventoryModTools.Unregister(string id)` removes a registration; the visible
+  list refreshes when it is available for interaction.
 - `InventoryModTools.TryOpen(string id)` returns `true` only when the requested
   ID is registered, the Mods tab controller exists, and the tool can be
   opened. It is optional and is not needed for a normal Mods-tab button.
 
 Modding Tools adds one **Mods** tab to the inventory/pause menu. The tab
 contains one button per registration, or a disabled
-**No Mod GUIs Registered** placeholder when it is empty.
+**No matching mods** placeholder when the list or search result is empty.
 Entries are arranged in three columns. When the rows exceed the visible tab
 area, the content is clipped to the tab and can be scrolled vertically with
 the mouse wheel.
@@ -547,6 +747,11 @@ Derive a Unity window from `ModToolBehaviour` and call `AttachSession` when it
 opens. The base class releases the session from `OnDisable` and `OnDestroy`.
 Call `ReleaseSession` during an explicit close before destroying the window.
 This removes repeated callback fields and defensive double-close code.
+
+Framework-triggered closure also stops the window's coroutines and destroys
+its framework-created overlay root (or its own GameObject for a standalone
+window). A custom `OnFrameworkSessionClosed` override may implement another
+lifetime policy. The framework never destroys an unmarked parent game UI.
 
 ### Scaled IMGUI
 
@@ -669,7 +874,7 @@ private void Awake()
         });
 }
 
-private void OnDestroy()
+private void RemoveInspectActionExplicitly()
 {
     inspectAction?.Dispose();
 }
@@ -895,9 +1100,10 @@ Registry rules:
   `TurfRegistrar`.
 - `OnInstanceRestored` must be safe to invoke during save loading.
 - Do not unregister a prefab while a loaded save may contain its instances.
-- If the supplying mod is absent, Silverpine logs the missing prefab and skips
-  that object during that load. Reinstall the mod before loading again to
-  reconstruct it.
+- If the supplying mod is absent, Silverpine skips that object during loading.
+  Modding Tools warns and keeps a recovery copy before an existing save is
+  overwritten. Reinstall the mod and load the original/recovery save to restore
+  skipped objects; a later save that omitted them cannot reconstruct them.
 
 ## Injectable construction menu
 

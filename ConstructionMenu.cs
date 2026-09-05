@@ -438,6 +438,17 @@ public static class ConstructionMenu
         }
     }
 
+    internal static ModRegistration RegisterOwned(string ownerId, ConstructionDefinition definition)
+    {
+        Register(ownerId, definition);
+        Entry entry = Entries[definition.Id.Trim()];
+        return new ModRegistration(() =>
+        {
+            if (Entries.TryGetValue(definition.Id.Trim(), out var current) && ReferenceEquals(current, entry))
+                Unregister(ownerId, definition.Id.Trim());
+        });
+    }
+
     public static SerializablePrefabRegistration RegisterSerializable(
         string ownerId,
         ConstructionDefinition definition,

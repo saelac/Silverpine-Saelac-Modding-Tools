@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestoreAdditionalProjectSources>https://nuget.bepinex.dev/v3/index.json</RestoreAdditionalProjectSources>
+    <SilverpineGameDir Condition="'$(SilverpineGameDir)' == ''">$(MSBuildProjectDirectory)\..\..\..</SilverpineGameDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ModdingTools.csproj" />
+    <Reference Include="Mono.Cecil">
+      <HintPath>$(SilverpineGameDir)\BepInEx\core\Mono.Cecil.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

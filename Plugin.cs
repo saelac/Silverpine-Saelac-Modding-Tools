@@ -20,7 +20,7 @@ public sealed class Plugin : BaseUnityPlugin
     public const string PluginGuid = "Saelac.Silverpine.ModdingTools";
     public const string LegacyPluginGuid = "renegadex.silverpine.moddingtools";
     public const string PluginName = "Modding Tools Menu";
-    public const string PluginVersion = "1.9.3";
+    public const string PluginVersion = "1.10.0";
 
     internal static ManualLogSource Log = null!;
     internal static ConfigEntry<KeyCode> InventoryModsShortcut = null!;
@@ -32,6 +32,7 @@ public sealed class Plugin : BaseUnityPlugin
     private void Awake()
     {
         Log = Logger;
+        BepInEx.Logging.Logger.Listeners.Add(new FrameworkDiagnostics.ErrorListener());
         FrameworkConfig = Config;
         InventoryModsShortcut = Config.Bind(
             "Shortcuts",
@@ -59,55 +60,33 @@ public sealed class Plugin : BaseUnityPlugin
             new ConfigDescription(
                 "Volume multiplier for music played through the Modding Tools audio API.",
                 new AcceptableValueRange<float>(0f, 1f)));
-        ModAudio.Initialize();
-        ModdingToolsMenu.RegisterSession(
-            PluginGuid + ".audio-settings.main",
-            "Audio Settings",
-            (_, session) => ModAudioSettingsWindow.Open(session),
-            order: 900);
-        InventoryModTools.RegisterSession(
-            PluginGuid + ".audio-settings.game",
-            "Audio Settings",
-            (_, session) => ModAudioSettingsWindow.Open(session),
-            order: 900);
-        Harmony.CreateAndPatchAll(typeof(MainMenuPatch), PluginGuid);
-        Harmony.CreateAndPatchAll(typeof(InventoryModsTabPatch), PluginGuid + ".inventory");
-        Harmony.CreateAndPatchAll(
-            typeof(PauseMenuCloseGuardPatch),
-            PluginGuid + ".inventory-close-guard");
-        Harmony.CreateAndPatchAll(
-            typeof(SerializablePrefabTemplateSavePatch),
-            PluginGuid + ".prefab-save");
-        Harmony.CreateAndPatchAll(
-            typeof(SerializablePrefabDeserializePatch),
-            PluginGuid + ".prefab-load");
-        Harmony.CreateAndPatchAll(
-            typeof(ConstructionAbilityContextPatch),
-            PluginGuid + ".construction-context");
-        Harmony.CreateAndPatchAll(
-            typeof(ConstructionRadialInterceptPatch),
-            PluginGuid + ".construction-menu");
-        Harmony.CreateAndPatchAll(
-            typeof(DialogueAudioEventPatch),
-            PluginGuid + ".audio-dialogue");
-        Harmony.CreateAndPatchAll(
-            typeof(DialogueActionDrawPatch),
-            PluginGuid + ".dialogue-actions");
-        Harmony.CreateAndPatchAll(
-            typeof(DialogueActionScrollInputPatch),
-            PluginGuid + ".dialogue-action-input");
-        Harmony.CreateAndPatchAll(
-            typeof(DialogueActionContinueOnlyPatch),
-            PluginGuid + ".dialogue-action-continue-only");
-        Harmony.CreateAndPatchAll(
-            typeof(DialoguePromptHistoryPatch),
-            PluginGuid + ".dialogue-prompt-history");
-        Harmony.CreateAndPatchAll(
-            typeof(DialoguePromptWorldLorePatch),
-            PluginGuid + ".dialogue-prompt-world-lore");
-        Harmony.CreateAndPatchAll(
-            typeof(DialoguePromptEnvironmentPatch),
-            PluginGuid + ".dialogue-prompt-environment");
+        // Install independent features separately so one game/API mismatch cannot stop later features.
+        FrameworkDiagnostics.InstallPatches("menus.main", typeof(MainMenuPatch));
+        FrameworkDiagnostics.InstallPatches("menus.inventory", typeof(InventoryModsTabPatch), typeof(PauseMenuCloseGuardPatch));
+        FrameworkDiagnostics.InstallPatches("prefabs", typeof(SerializablePrefabTemplateSavePatch),
+            typeof(SerializablePrefabDeserializePatch), typeof(SerializablePrefabAliasPatch));
+        FrameworkDiagnostics.InstallPatches("construction", typeof(ConstructionAbilityContextPatch), typeof(ConstructionRadialInterceptPatch));
+        FrameworkDiagnostics.InstallPatches("dialogue.actions", typeof(DialogueActionDrawPatch),
+            typeof(DialogueActionScrollInputPatch), typeof(DialogueActionContinueOnlyPatch));
+        FrameworkDiagnostics.InstallPatches("dialogue.prompts", typeof(DialoguePromptHistoryPatch),
+            typeof(DialoguePromptWorldLorePatch), typeof(DialoguePromptEnvironmentPatch));
+        FrameworkDiagnostics.InstallPatches("save-data", typeof(ModSaveLoadPatch), typeof(ModSaveWritePatch), typeof(ModSaveNewGamePatch));
+        FrameworkDiagnostics.InstallPatches("audio.dialogue", typeof(DialogueAudioEventPatch));
+        FrameworkDiagnostics.Initialize("audio", () =>
+        {
+            ModAudio.Initialize();
+            ModdingToolsMenu.RegisterSession(PluginGuid + ".audio-settings.main", "Audio Settings",
+                (_, session) => ModAudioSettingsWindow.Open(session), order: 900);
+            InventoryModTools.RegisterSession(PluginGuid + ".audio-settings.game", "Audio Settings",
+                (_, session) => ModAudioSettingsWindow.Open(session), order: 900);
+        });
+        ModdingToolsMenu.RegisterSession(PluginGuid + ".status.main", "Framework Status",
+            (_, session) => FrameworkStatusWindow.Open(session), order: 1000);
+        InventoryModTools.RegisterSession(PluginGuid + ".status.game", "Framework Status",
+            (_, session) => FrameworkStatusWindow.Open(session), order: 1000);
+        var runtime = new GameObject("ModdingToolsFrameworkRuntime");
+        UnityEngine.Object.DontDestroyOnLoad(runtime);
+        runtime.AddComponent<FrameworkRuntime>();
     }
 }
 
@@ -139,6 +118,8 @@ public static class ModdingToolsMenu
     internal sealed class Entry
     {
         internal string Id = "";
+        internal string OwnerId = "";
+        internal string GroupLabel = "";
         internal string Label = "";
         internal int Order;
         internal Action<MainMenuUI, ModToolSession> Open = null!;
@@ -164,7 +145,9 @@ public static class ModdingToolsMenu
         if (open == null)
             throw new ArgumentNullException(nameof(open));
 
-        Entries[id] = new Entry
+        if (Entries.ContainsKey(id.Trim()))
+            FrameworkDiagnostics.Record("Menu registration replaced ID '" + id.Trim() + "'. Use ModContext for owner conflict checks.");
+        Entries[id.Trim()] = new Entry
         {
             Id = id.Trim(),
             Label = label.Trim(),
@@ -186,7 +169,9 @@ public static class ModdingToolsMenu
         if (open == null)
             throw new ArgumentNullException(nameof(open));
 
-        Entries[id] = new Entry
+        if (Entries.ContainsKey(id.Trim()))
+            FrameworkDiagnostics.Record("Menu registration replaced ID '" + id.Trim() + "'. Use ModContext for owner conflict checks.");
+        Entries[id.Trim()] = new Entry
         {
             Id = id.Trim(),
             Label = label.Trim(),
@@ -197,7 +182,23 @@ public static class ModdingToolsMenu
 
     /// <summary>Removes a previously registered entry.</summary>
     public static bool Unregister(string id) =>
-        !string.IsNullOrWhiteSpace(id) && Entries.Remove(id);
+        !string.IsNullOrWhiteSpace(id) && Entries.Remove(id.Trim());
+
+    internal static ModRegistration RegisterOwned(string owner, string id, string label,
+        Action<MainMenuUI, ModToolSession> open, int order, string group)
+    {
+        if (Entries.TryGetValue(id, out var existing) && !string.Equals(existing.OwnerId, owner, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Menu ID '" + id + "' is already registered.");
+        RegisterSession(id, label, open, order);
+        Entry entry = Entries[id];
+        entry.OwnerId = owner;
+        entry.GroupLabel = group;
+        return new ModRegistration(() =>
+        {
+            if (Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry))
+                Entries.Remove(id);
+        });
+    }
 
     internal static IReadOnlyList<Entry> Snapshot() =>
         Entries.Values
@@ -215,6 +216,8 @@ public static class InventoryModTools
     internal sealed class Entry
     {
         internal string Id = "";
+        internal string OwnerId = "";
+        internal string GroupLabel = "";
         internal string Label = "";
         internal int Order;
         internal Action<InventoryUI, ModToolSession> Open = null!;
@@ -223,6 +226,12 @@ public static class InventoryModTools
     private static readonly Dictionary<string, Entry> Entries =
         new(StringComparer.OrdinalIgnoreCase);
     private static InventoryModsTabController? controller;
+    private static int emergencyRecoveryFrame = -1;
+    internal static bool IsEmergencyRecoveryFrame => emergencyRecoveryFrame == Time.frameCount;
+    internal static void SuppressCloseForRecovery() => emergencyRecoveryFrame = Time.frameCount;
+    internal static int Revision { get; private set; }
+    public static string? ActiveToolId => controller?.ActiveToolId;
+    internal static bool IsSearchFocused => controller != null && controller.IsSearchFocused;
 
     public static void Register(
         string id,
@@ -237,13 +246,16 @@ public static class InventoryModTools
         if (open == null)
             throw new ArgumentNullException(nameof(open));
 
-        Entries[id] = new Entry
+        if (Entries.ContainsKey(id.Trim()))
+            FrameworkDiagnostics.Record("Menu registration replaced ID '" + id.Trim() + "'. Use ModContext for owner conflict checks.");
+        Entries[id.Trim()] = new Entry
         {
             Id = id.Trim(),
             Label = label.Trim(),
             Order = order,
             Open = (inventory, session) => open(inventory, session.Close)
         };
+        Revision++;
     }
 
     public static void RegisterSession(
@@ -259,23 +271,46 @@ public static class InventoryModTools
         if (open == null)
             throw new ArgumentNullException(nameof(open));
 
-        Entries[id] = new Entry
+        if (Entries.ContainsKey(id.Trim()))
+            FrameworkDiagnostics.Record("Menu registration replaced ID '" + id.Trim() + "'. Use ModContext for owner conflict checks.");
+        Entries[id.Trim()] = new Entry
         {
             Id = id.Trim(),
             Label = label.Trim(),
             Order = order,
             Open = open
         };
+        Revision++;
     }
 
-    public static bool Unregister(string id) =>
-        !string.IsNullOrWhiteSpace(id) && Entries.Remove(id);
+    public static bool Unregister(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || !Entries.Remove(id.Trim())) return false;
+        Revision++;
+        return true;
+    }
+
+    internal static ModRegistration RegisterOwned(string owner, string id, string label,
+        Action<InventoryUI, ModToolSession> open, int order, string group)
+    {
+        if (Entries.TryGetValue(id, out var existing) && !string.Equals(existing.OwnerId, owner, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Inventory menu ID '" + id + "' is already registered.");
+        RegisterSession(id, label, open, order);
+        Entry entry = Entries[id];
+        entry.OwnerId = owner;
+        entry.GroupLabel = group;
+        return new ModRegistration(() =>
+        {
+            if (Entries.TryGetValue(id, out var current) && ReferenceEquals(current, entry))
+                Unregister(id);
+        });
+    }
 
     /// <summary>Opens a registered tool directly, including its pause-menu session.</summary>
     public static bool TryOpen(string id)
     {
         if (string.IsNullOrWhiteSpace(id) ||
-            !Entries.TryGetValue(id, out Entry entry) ||
+            !Entries.TryGetValue(id.Trim(), out Entry entry) ||
             controller == null)
             return false;
         return controller.TryOpen(entry);
@@ -323,8 +358,9 @@ internal static class PauseMenuCloseGuardPatch
 {
     private static bool Prefix(PauseMenuManager __instance) =>
         !__instance.open ||
-        !InventoryModTools.HasActiveToolSession ||
-        InventoryModTools.IsCollectingWorldInput;
+        (!InventoryModTools.IsEmergencyRecoveryFrame &&
+         (!InventoryModTools.HasActiveToolSession || InventoryModTools.IsCollectingWorldInput) &&
+         (!InventoryModTools.IsSearchFocused || Input.GetKeyDown(KeyCode.Escape)));
 }
 
 [HarmonyPatch(typeof(MainMenuUI), "Start")]
@@ -482,7 +518,7 @@ internal sealed class MenuController : MonoBehaviour
             return;
         if (toolOpen)
         {
-            activeSession?.Close();
+            activeSession?.RequestClose(ModToolCloseReason.EmergencyEscape);
             return;
         }
         if (menuOpen)
@@ -558,7 +594,7 @@ internal sealed class MenuController : MonoBehaviour
 
     private void OnDestroy()
     {
-        activeSession?.Close();
+        activeSession?.RequestClose(ModToolCloseReason.HostDestroyed);
     }
 }
 
@@ -667,7 +703,15 @@ internal sealed class InventoryModsTabController :
     private RectTransform gridContent = null!;
     private GridLayoutGroup gridLayout = null!;
     private bool toolOpen;
-    private bool layoutFinalized;
+    private Vector2 lastScreenSize;
+    private Vector2 lastRootSize;
+    private float lastCanvasScale;
+    private int builtRevision = -1;
+    private string search = "";
+    private bool groupByMod;
+    private RectTransform toolbar = null!;
+    private TMP_InputField searchField = null!;
+    private Button groupButton = null!;
     private ModToolSession? activeSession;
     private Player? inputBlockedPlayer;
     private bool ownsPlayerInputBlock;
@@ -676,6 +720,8 @@ internal sealed class InventoryModsTabController :
     public GameObject Root => root;
     internal bool IsToolOpen => toolOpen;
     internal bool IsCollectingWorldInput => collectingWorldInput;
+    internal string? ActiveToolId => activeSession?.Id;
+    internal bool IsSearchFocused => searchField != null && searchField.isFocused;
 
     internal void Build(
         PauseMenuManager manager,
@@ -692,7 +738,23 @@ internal sealed class InventoryModsTabController :
         gridViewport = (RectTransform)gridContent.parent;
         gridLayout = gridContent.GetComponent<GridLayoutGroup>();
         InventoryModTools.SetController(this);
+        BuildToolbar();
+        RebuildButtons(entries);
+    }
+
+    private void RebuildButtons(IReadOnlyList<InventoryModTools.Entry> entries)
+    {
+        foreach (Button button in toolButtons)
+            if (button != null) { button.gameObject.SetActive(false); Destroy(button.gameObject); }
+        toolButtons.Clear();
+        builtRevision = InventoryModTools.Revision;
+        entries = entries.Where(e => string.IsNullOrWhiteSpace(search) ||
+            (e.Label + " " + e.Id + " " + e.GroupLabel).IndexOf(search.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+            .OrderBy(e => groupByMod ? GroupName(e) : "", StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.Order).ThenBy(e => e.Label, StringComparer.OrdinalIgnoreCase).ToArray();
         SetGridHeight(Math.Max(entries.Count, 1));
+        gridViewport.GetComponent<ScrollRect>().StopMovement();
+        gridContent.anchoredPosition = Vector2.zero;
 
         Button template = Traverse.Create(inventory)
             .Field("useButton").GetValue<Button>();
@@ -702,7 +764,7 @@ internal sealed class InventoryModsTabController :
                 template, gridContent, worldPositionStays: false);
             empty.name = "InventoryModToolsEmpty";
             empty.onClick = new Button.ButtonClickedEvent();
-            InventoryModsTabPatch.SetLabel(empty, "No Mod GUIs Registered");
+            InventoryModsTabPatch.SetLabel(empty, "No matching mods");
             empty.gameObject.SetActive(true);
             empty.transform.localScale = Vector3.one;
             empty.interactable = false;
@@ -717,7 +779,16 @@ internal sealed class InventoryModsTabController :
                 template, gridContent, worldPositionStays: false);
             button.name = "InventoryModTool_" + Sanitize(entry.Id);
             button.onClick = new Button.ButtonClickedEvent();
-            InventoryModsTabPatch.SetLabel(button, entry.Label);
+            InventoryModsTabPatch.SetLabel(button, groupByMod ? GroupName(entry) + " / " + entry.Label : entry.Label);
+            ModUi.NormalizeButton(button);
+            var text = button.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (text != null)
+            {
+                text.fontSizeMax = text.fontSize;
+                text.fontSizeMin = Mathf.Min(16f, text.fontSize);
+                text.enableAutoSizing = true;
+                text.overflowMode = TextOverflowModes.Ellipsis;
+            }
             button.gameObject.SetActive(true);
             button.transform.localScale = Vector3.one;
             button.interactable = true;
@@ -728,10 +799,49 @@ internal sealed class InventoryModsTabController :
 
     public void OnRootEnabled()
     {
-        if (layoutFinalized)
-            return;
-        layoutFinalized = true;
         StartCoroutine(FinalizeGridLayoutNextFrame());
+    }
+
+    private static string GroupName(InventoryModTools.Entry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.GroupLabel)) return entry.GroupLabel;
+        var plugin = BepInEx.Bootstrap.Chainloader.PluginInfos.Values
+            .Where(p => entry.Id.StartsWith(p.Metadata.GUID, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => p.Metadata.GUID.Length).FirstOrDefault();
+        return plugin?.Metadata.Name ?? (string.IsNullOrEmpty(entry.OwnerId) ? entry.Label : entry.OwnerId);
+    }
+
+    private void BuildToolbar()
+    {
+        toolbar = new GameObject("ModToolsSearch", typeof(RectTransform)).GetComponent<RectTransform>();
+        toolbar.SetParent(root.transform, false);
+        Button template = ModUi.GetInventoryButtonTemplate(inventory);
+        var inputRoot = new GameObject("Search mods", typeof(RectTransform), typeof(Image), typeof(RectMask2D), typeof(TMP_InputField));
+        var rect = inputRoot.GetComponent<RectTransform>();
+        rect.SetParent(toolbar, false);
+        rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one;
+        rect.offsetMin = Vector2.zero; rect.offsetMax = new Vector2(-190f, 0);
+        inputRoot.GetComponent<Image>().color = new Color(0.1f, 0.12f, 0.16f, 0.98f);
+        searchField = inputRoot.GetComponent<TMP_InputField>();
+        searchField.targetGraphic = inputRoot.GetComponent<Image>();
+        var text = UnityEngine.Object.Instantiate(template.GetComponentInChildren<TextMeshProUGUI>(true), rect, false);
+        text.text = ""; text.fontSize = 24f; text.alignment = TextAlignmentOptions.MidlineLeft;
+        text.enableWordWrapping = false; text.raycastTarget = false;
+        text.rectTransform.anchorMin = Vector2.zero; text.rectTransform.anchorMax = Vector2.one;
+        text.rectTransform.offsetMin = new Vector2(12, 0); text.rectTransform.offsetMax = new Vector2(-12, 0);
+        var placeholder = UnityEngine.Object.Instantiate(text, rect, false);
+        placeholder.text = "Search mods…"; placeholder.color = Color.gray;
+        searchField.textViewport = rect; searchField.textComponent = text; searchField.placeholder = placeholder;
+        searchField.onValueChanged.AddListener(value => { search = value; RebuildButtons(InventoryModTools.Snapshot()); });
+        groupButton = ModUi.CloneButton(template, toolbar, "Group by mod", () =>
+        {
+            groupByMod = !groupByMod;
+            InventoryModsTabPatch.SetLabel(groupButton, groupByMod ? "Ungroup" : "Group by mod");
+            RebuildButtons(InventoryModTools.Snapshot());
+        }, 42f);
+        RectTransform buttonRect = groupButton.GetComponent<RectTransform>();
+        buttonRect.anchorMin = new Vector2(1, 0); buttonRect.anchorMax = Vector2.one;
+        buttonRect.offsetMin = new Vector2(-180, 0); buttonRect.offsetMax = Vector2.zero;
     }
 
     public void OnRootDisabled()
@@ -820,13 +930,14 @@ internal sealed class InventoryModsTabController :
     {
         collectingWorldInput = false;
         InventoryModTools.ClearController(this);
-        activeSession?.Close();
+        activeSession?.RequestClose(ModToolCloseReason.HostDestroyed);
         ReleasePlayerInputBlock();
     }
 
     private void SetToolSessionActive(bool active)
     {
         toolOpen = active;
+        if (searchField != null) searchField.interactable = !active;
         if (active)
         {
             AcquirePlayerInputBlock();
@@ -876,6 +987,7 @@ internal sealed class InventoryModsTabController :
     private void EndToolSession()
     {
         collectingWorldInput = false;
+        if (Input.GetKeyDown(KeyCode.Escape)) InventoryModTools.SuppressCloseForRecovery();
         if (toolOpen)
         {
             activeSession = null;
@@ -885,19 +997,28 @@ internal sealed class InventoryModsTabController :
 
     private void Update()
     {
-        if (collectingWorldInput)
-            return;
-
-        if (toolOpen && (pauseMenu == null || !pauseMenu.open))
+        if (root != null && root.activeInHierarchy && !toolOpen)
         {
-            activeSession?.Close();
-            return;
+            if (builtRevision != InventoryModTools.Revision) RebuildButtons(InventoryModTools.Snapshot());
+            var size = new Vector2(Screen.width, Screen.height);
+            var rootSize = root.GetComponent<RectTransform>().rect.size;
+            float scale = root.GetComponentInParent<Canvas>()?.scaleFactor ?? 1f;
+            if (size != lastScreenSize || rootSize != lastRootSize || !Mathf.Approximately(scale, lastCanvasScale))
+                FinalizeGridLayout();
         }
 
         if (toolOpen && Input.GetKeyDown(KeyCode.Escape))
         {
-            Plugin.Log.LogWarning(
-                "Escape released a stuck inventory mod tool session.");
+            InventoryModTools.SuppressCloseForRecovery();
+            bool restoreMenu = collectingWorldInput;
+            activeSession?.RequestClose(ModToolCloseReason.EmergencyEscape);
+            if (restoreMenu) OpenModsTab();
+            return;
+        }
+        if (collectingWorldInput) return;
+
+        if (toolOpen && (pauseMenu == null || !pauseMenu.open))
+        {
             activeSession?.Close();
             return;
         }
@@ -917,7 +1038,7 @@ internal sealed class InventoryModsTabController :
         if (player == null ||
             manager == null ||
             InventoryUI.Instance == null ||
-            manager.exclusiveMode ||
+            manager.exclusiveMode || IsSearchFocused ||
             (ActionQueue.Instance != null &&
              ActionQueue.Instance.turnBeingProcessed) ||
             (DialogBox.Instance != null &&
@@ -932,7 +1053,8 @@ internal sealed class InventoryModsTabController :
 
         return manager.open &&
             SaveUI.Instance != null &&
-            !SaveUI.Instance.IsSaveNameInputFieldFocused();
+            !SaveUI.Instance.IsSaveNameInputFieldFocused() &&
+            (searchField == null || !searchField.isFocused);
     }
 
     private bool OpenModsTab()
@@ -1036,12 +1158,15 @@ internal sealed class InventoryModsTabController :
         Canvas.ForceUpdateCanvases();
         FitViewportToScreen();
         float cellWidth = Mathf.Max(
-            180f,
+            1f,
             (gridViewport.rect.width -
              gridLayout.padding.horizontal -
              gridLayout.spacing.x * 2f) / 3f);
         gridLayout.cellSize = new Vector2(cellWidth, 58f);
         LayoutRebuilder.ForceRebuildLayoutImmediate(gridContent);
+        lastScreenSize = new Vector2(Screen.width, Screen.height);
+        lastRootSize = root.GetComponent<RectTransform>().rect.size;
+        lastCanvasScale = root.GetComponentInParent<Canvas>()?.scaleFactor ?? 1f;
     }
 
     private void FitViewportToScreen()
@@ -1096,6 +1221,12 @@ internal sealed class InventoryModsTabController :
         gridViewport.sizeDelta = new Vector2(
             Mathf.Abs(localTopRight.x - localBottomLeft.x),
             Mathf.Abs(localTopRight.y - localBottomLeft.y));
+        const float headerHeight = 48f;
+        toolbar.anchorMin = toolbar.anchorMax = toolbar.pivot = new Vector2(0.5f, 0.5f);
+        toolbar.anchoredPosition = new Vector2(gridViewport.anchoredPosition.x, localTopRight.y - headerHeight * 0.5f);
+        toolbar.sizeDelta = new Vector2(gridViewport.sizeDelta.x, headerHeight - 6f);
+        gridViewport.anchoredPosition += Vector2.down * headerHeight * 0.5f;
+        gridViewport.sizeDelta -= new Vector2(0, headerHeight);
     }
 
     private IEnumerator FinalizeGridLayoutNextFrame()
