@@ -6,7 +6,10 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace Silverpine.ModdingTools;
 
@@ -989,6 +992,71 @@ internal static class ConstructionRadialInterceptPatch
     }
 }
 
+[HarmonyPatch(typeof(Player), "Update")]
+internal static class ConstructionShortcutPatch
+{
+    // Return false only when we consume the shortcut, so closing the window
+    // cannot also move the player or invoke a native ability in the same frame.
+    private static bool Prefix(Player __instance)
+    {
+        if (!ReferenceEquals(__instance, Player.Instance) ||
+            Plugin.ConstructionShortcutEnabled?.Value != true)
+            return true;
+        KeyCode key = Plugin.ConstructionShortcut?.Value ?? KeyCode.None;
+        if (key == KeyCode.None || !Input.GetKeyDown(key))
+            return true;
+
+        PauseMenuManager manager = PauseMenuManager.Instance;
+        bool restricted = __instance.dead || manager == null ||
+            MainMenuUI.Instance == null || MainMenuUI.Instance.otherUI == null ||
+            !MainMenuUI.Instance.otherUI.gameObject.activeInHierarchy ||
+            manager.exclusiveMode || InventoryModTools.HasActiveToolSession ||
+            InventoryModTools.IsEmergencyRecoveryFrame ||
+            (ActionQueue.Instance != null && ActionQueue.Instance.turnBeingProcessed) ||
+            (DialogBox.Instance != null && DialogBox.Instance.isOpen) ||
+            (__instance.statusEffectsTarget != null &&
+             __instance.statusEffectsTarget.HasStatusEffectOfType<StatusEffect_Interacting>());
+        bool typing = ConstructionMenuWindow.IsSearchFocused ||
+            InventoryModTools.IsSearchFocused ||
+            (SaveUI.Instance != null && SaveUI.Instance.IsSaveNameInputFieldFocused()) ||
+            IsTextInputFocused();
+        if (!CanToggle(ConstructionMenuWindow.IsOpen, restricted, typing,
+                __instance.IsInputBlocked(), manager != null && manager.open))
+            return true;
+
+        try
+        {
+            if (ConstructionMenuWindow.IsOpen)
+                ConstructionMenuWindow.CloseFromShortcut();
+            else
+            {
+                PlayerAbility_Construct? ability = __instance.GetPlayerAbilities()
+                    .OfType<PlayerAbility_Construct>().FirstOrDefault();
+                if (ability == null) return true;
+                ability.Callback();
+            }
+        }
+        catch (Exception exception)
+        {
+            FrameworkDiagnostics.Report(Plugin.PluginGuid, "construction shortcut", exception);
+            Plugin.Log.LogError("Could not toggle the construction menu: " + exception);
+        }
+        return false;
+    }
+
+    internal static bool CanToggle(bool menuOpen, bool restricted, bool typing,
+        bool inputBlocked, bool pauseMenuOpen) =>
+        !restricted && !typing && (menuOpen || !inputBlocked || pauseMenuOpen);
+
+    private static bool IsTextInputFocused()
+    {
+        GameObject? selected = EventSystem.current?.currentSelectedGameObject;
+        return selected != null &&
+            ((selected.GetComponent<InputField>()?.isFocused ?? false) ||
+             (selected.GetComponent<TMP_InputField>()?.isFocused ?? false));
+    }
+}
+
 internal sealed class ConstructionMenuWindow : MonoBehaviour
 {
     private const float DesignWidth = 1920f;
@@ -1002,6 +1070,11 @@ internal sealed class ConstructionMenuWindow : MonoBehaviour
     private const int Columns = 3;
 
     private static ConstructionMenuWindow? instance;
+    private const string SearchControlName = "ModdingTools.Construction.Search";
+
+    internal static bool IsOpen => instance != null && !instance.closing;
+    internal static bool IsSearchFocused => IsOpen && instance!.searchFocused;
+    internal static void CloseFromShortcut() => instance?.Close();
 
     private readonly List<ConstructionDisplayItem> allItems = new();
     private readonly List<ConstructionDisplayCategory> categories = new();
@@ -1012,6 +1085,7 @@ internal sealed class ConstructionMenuWindow : MonoBehaviour
     private Player? blockedPlayer;
     private bool ownsInputBlock;
     private bool closing;
+    private bool searchFocused;
     private GUIStyle? titleStyle;
     private GUIStyle? nameStyle;
     private GUIStyle? detailStyle;
@@ -1063,6 +1137,7 @@ internal sealed class ConstructionMenuWindow : MonoBehaviour
 
     private void OnGUI()
     {
+        if (closing) return;
         EnsureStyles();
         using ModGuiScope scope = ModGui.BeginScaled(DesignWidth, DesignHeight);
         Rect window = new(
@@ -1079,6 +1154,14 @@ internal sealed class ConstructionMenuWindow : MonoBehaviour
 
     private void DrawWindow(int id)
     {
+        Rect searchBounds = new(112f, 74f, WindowWidth - 146f, 38f);
+        // Only release our search field's keyboard focus, before any controls
+        // process this click. Leave mouse capture and the event itself alone.
+        if (GUI.GetNameOfFocusedControl() == SearchControlName &&
+            Event.current.type == EventType.MouseDown &&
+            !searchBounds.Contains(Event.current.mousePosition))
+            GUIUtility.keyboardControl = 0;
+
         GUI.Label(
             new Rect(30f, 18f, WindowWidth - 160f, 48f),
             "Construction",
@@ -1092,9 +1175,11 @@ internal sealed class ConstructionMenuWindow : MonoBehaviour
         }
 
         GUI.Label(new Rect(34f, 76f, 78f, 34f), "Search:", nameStyle!);
+        GUI.SetNextControlName(SearchControlName);
         search = GUI.TextField(
-            new Rect(112f, 74f, WindowWidth - 146f, 38f),
+            searchBounds,
             search ?? "");
+        searchFocused = GUI.GetNameOfFocusedControl() == SearchControlName;
 
         int categoryColumns = Math.Min(8, Math.Max(1, categories.Count));
         int categoryRows = Mathf.CeilToInt(

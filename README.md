@@ -4,7 +4,7 @@ Shared BepInEx framework services for extensible Silverpine mods.
 
 Created by **Saelac and ChatGPT**.
 
-**Current version:** 1.10.0
+**Current version:** 1.10.2
 
 ## Purpose
 
@@ -111,19 +111,19 @@ Silverpine.ModdingTools
 Framework API version documented here:
 
 ```text
-ModdingTools 1.10.0
+ModdingTools 1.10.2
 ```
 
 ## Installation
 
 1. Install BepInEx 5 for Silverpine.
-2. Download and extract `ModdingTools-1.10.0.zip` from the GitHub release.
+2. Download and extract `ModdingTools-1.10.2.zip` from the GitHub release.
 3. Place the extracted files together under
    `BepInEx/plugins/ModdingTools/`.
 4. Remove older duplicate copies of `ModdingTools.dll` elsewhere under
    `BepInEx/plugins/`.
-5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.10.0** and
-   **Modding Tools Legacy GUID Compatibility 1.10.0**.
+5. Start Silverpine and confirm BepInEx loads **Modding Tools Menu 1.10.2** and
+   **Modding Tools Legacy GUID Compatibility 1.10.2**.
 
 The complete ZIP contains `ModdingTools.dll`, the shared
 `Newtonsoft.Json.dll`, this README, and the Silverpine plugin-lifetime
@@ -1112,6 +1112,33 @@ with an extensible IMGUI window. The window contains preview images, category
 filters, search, three-column cards, and vertical scrolling. Base-game and
 mod-added entries use Silverpine's native construction callbacks after the
 player chooses **Build**.
+
+Press **B** to open the construction menu, or press it again to close it.
+The shortcut invokes the same Construct ability used by the Actions menu, so
+base-game and registered mod constructions remain available without consumer
+plugin changes. **Escape** and the window's **Close** button still work.
+
+Configure the shortcut in `BepInEx/config/Saelac.Silverpine.ModdingTools.cfg`:
+
+```ini
+[Shortcuts]
+EnableConstructionShortcut = true
+ToggleConstructionMenu = B
+```
+
+Set `EnableConstructionShortcut = false` or `ToggleConstructionMenu = None`
+to disable just the shortcut; the normal Construct action remains available.
+Choose another Unity `KeyCode` name to rebind it, avoiding keys already used
+for other actions. Close the game before editing the configuration file.
+
+The shortcut does not interrupt conversations, active mod-tool sessions (even
+during world-input collection), turn processing, interacting status effects,
+exclusive pause menus, or focused text fields. An ordinary inventory/pause
+menu may be open, matching the inventory shortcut's input-block exception.
+Typing **B** in construction search inserts text instead of closing the menu;
+click outside the search box to use the toggle again, or press **Escape** to
+close immediately. Closing with the shortcut consumes that frame's native
+player input so the same press cannot also trigger a gameplay action.
 
 Register an already serialized prefab:
 

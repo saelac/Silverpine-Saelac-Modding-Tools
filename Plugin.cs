@@ -20,10 +20,12 @@ public sealed class Plugin : BaseUnityPlugin
     public const string PluginGuid = "Saelac.Silverpine.ModdingTools";
     public const string LegacyPluginGuid = "renegadex.silverpine.moddingtools";
     public const string PluginName = "Modding Tools Menu";
-    public const string PluginVersion = "1.10.0";
+    public const string PluginVersion = "1.10.2";
 
     internal static ManualLogSource Log = null!;
     internal static ConfigEntry<KeyCode> InventoryModsShortcut = null!;
+    internal static ConfigEntry<bool> ConstructionShortcutEnabled = null!;
+    internal static ConfigEntry<KeyCode> ConstructionShortcut = null!;
     internal static ConfigEntry<float> CustomEffectsVolume = null!;
     internal static ConfigEntry<float> CustomAmbientVolume = null!;
     internal static ConfigEntry<float> CustomMusicVolume = null!;
@@ -39,6 +41,16 @@ public sealed class Plugin : BaseUnityPlugin
             "OpenInventoryModsTab",
             KeyCode.M,
             "Open the inventory directly on the Mods tab. Set to None to disable.");
+        ConstructionShortcutEnabled = Config.Bind(
+            "Shortcuts",
+            "EnableConstructionShortcut",
+            true,
+            "Enable the shortcut that toggles the shared construction menu.");
+        ConstructionShortcut = Config.Bind(
+            "Shortcuts",
+            "ToggleConstructionMenu",
+            KeyCode.B,
+            "Open or close the construction menu when not typing or in a restricted interaction. Set to None to disable.");
         CustomEffectsVolume = Config.Bind(
             "Audio",
             "CustomEffectsVolume",
@@ -66,6 +78,7 @@ public sealed class Plugin : BaseUnityPlugin
         FrameworkDiagnostics.InstallPatches("prefabs", typeof(SerializablePrefabTemplateSavePatch),
             typeof(SerializablePrefabDeserializePatch), typeof(SerializablePrefabAliasPatch));
         FrameworkDiagnostics.InstallPatches("construction", typeof(ConstructionAbilityContextPatch), typeof(ConstructionRadialInterceptPatch));
+        FrameworkDiagnostics.InstallPatches("construction.shortcuts", typeof(ConstructionShortcutPatch));
         FrameworkDiagnostics.InstallPatches("dialogue.actions", typeof(DialogueActionDrawPatch),
             typeof(DialogueActionScrollInputPatch), typeof(DialogueActionContinueOnlyPatch));
         FrameworkDiagnostics.InstallPatches("dialogue.prompts", typeof(DialoguePromptHistoryPatch),

@@ -32,6 +32,8 @@ internal static class Checks
     {
         CompareApi(baseline);
         CompareConsumers(game);
+        CheckConstructionShortcut();
+        CheckConstructionMouseHandling();
         int released = 0, closed = 0;
         var session = Session(() => { released++; throw new InvalidOperationException("test release failure"); });
         session.Closed += () => throw new InvalidOperationException("test consumer failure");
@@ -69,6 +71,37 @@ internal static class Checks
         finally { Directory.Delete(dir, true); }
         Check(FrameworkDiagnostics.RecentErrors.Count >= 2, "consumer failures appear in bounded diagnostics");
         Console.WriteLine($"{passed} checks passed. Native Unity UI/audio execution still requires an in-game check.");
+    }
+
+    private static void CheckConstructionShortcut()
+    {
+        Type shortcut = typeof(ConstructionMenu).Assembly.GetType("Silverpine.ModdingTools.ConstructionShortcutPatch")!;
+        bool CanToggle(bool open, bool restricted, bool typing, bool inputBlocked, bool pauseOpen) =>
+            (bool)Call(shortcut, "CanToggle", open, restricted, typing, inputBlocked, pauseOpen)!;
+        Check(CanToggle(false, false, false, false, false), "build shortcut opens during ordinary gameplay");
+        Check(CanToggle(true, false, false, true, false), "build shortcut can close its own input-blocked window");
+        Check(!CanToggle(true, false, true, true, false), "typing in construction search does not toggle the window");
+        Check(!CanToggle(false, false, true, true, true), "focused pause-menu text input blocks the build shortcut");
+        Check(!CanToggle(false, true, false, false, false) && !CanToggle(true, true, false, true, true),
+            "restricted interactions block the build shortcut even with an open menu");
+        Check(!CanToggle(false, false, false, true, false), "unrelated player-input locks block opening construction");
+        Check(CanToggle(false, false, false, true, true), "ordinary inventory input lock permits the build shortcut");
+    }
+
+    private static void CheckConstructionMouseHandling()
+    {
+        using var module = ModuleDefinition.ReadModule(typeof(ConstructionMenu).Assembly.Location);
+        var window = module.Types.Single(t => t.FullName == "Silverpine.ModdingTools.ConstructionMenuWindow");
+        var calls = window.Methods.Single(m => m.Name == "DrawWindow").Body.Instructions
+            .Select(i => i.Operand).OfType<MethodReference>().ToList();
+        Check(!calls.Any(m => m.DeclaringType.FullName == "UnityEngine.GUI" && m.Name == "FocusControl"),
+            "construction controls do not perform blanket named-focus resets");
+        Check(!calls.Any(m => (m.DeclaringType.FullName == "UnityEngine.GUIUtility" && m.Name == "set_hotControl") ||
+                             (m.DeclaringType.FullName == "UnityEngine.Event" && m.Name == "Use")),
+            "construction search handling does not reset mouse capture or consume click events");
+        int release = calls.FindIndex(m => m.DeclaringType.FullName == "UnityEngine.GUIUtility" && m.Name == "set_keyboardControl");
+        int button = calls.FindIndex(m => m.DeclaringType.FullName == "UnityEngine.GUI" && m.Name == "Button");
+        Check(release >= 0 && button > release, "construction search releases keyboard focus before buttons process a click");
     }
 
     private static void SaveRoundTrip(string dir)

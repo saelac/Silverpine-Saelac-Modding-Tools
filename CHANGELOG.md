@@ -2,6 +2,21 @@
 
 Created by Saelac and ChatGPT.
 
+## 1.10.2
+
+- Removes construction-search blanket focus resets introduced with the B
+  shortcut. Only releases the search field's keyboard focus on an outside
+  click, before drawing buttons, without consuming clicks or resetting mouse
+  capture. The B toggle and emergency Escape behavior remain available.
+
+## 1.10.1
+
+- Adds an optional, configurable construction-menu toggle shortcut, default B.
+  Uses the existing Construct ability, including base-game and mod entries.
+- Guards the shortcut during conversations, other tool sessions, text input,
+  turn processing, interacting status effects, and exclusive pause menus.
+  Construction search accepts the bound key as text; Escape still closes it.
+
 ## 1.10.0
 
 - Preserves all 1.9.3 public/protected APIs and both framework plugin identities.
